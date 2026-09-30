@@ -140,6 +140,16 @@ impl<T> Warren<T> {
                 .and_then(|x| unsafe { Some(x.assume_init_mut()) })
         } else { None }
     }
+    
+    pub fn get_disjoint_mut<const N: usize>(&mut self, indices: [usize; N]) -> [Option<&mut T>; N] {
+        let ptr = self as *mut Warren<T>;
+
+        let result = indices.map(|index| {
+            unsafe { (*ptr).get_mut(index) }
+        });
+
+        result
+    }
 
     fn _get_first_iter_location(&self) -> Option<(usize, usize)> {
         let region_index = self.guard.iter()

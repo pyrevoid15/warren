@@ -1,9 +1,11 @@
-mod warren;
-pub use { warren::{Warren, WarrenIterMut, WarrenIter}};
+pub mod warren;
+pub use warren::Warren;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::ops::Deref;
+
+use super::*;
     use warren::REGION_SIZE;
     use rand::Rng;
 
@@ -53,6 +55,33 @@ mod tests {
         removed.iter().for_each(|&i| {
             assert_eq!(*warren.get(i).expect("Found index was not reused."), 69420);
         });
+    }
+
+    #[test]
+    fn test_hive_disjoint_selection() {
+        
+        let mut warren: Warren<u32> = Warren::with_capacity(REGION_SIZE + 2);
+        let removed = [1, 3, REGION_SIZE - 1, REGION_SIZE];
+
+        for index in 0..(REGION_SIZE + 2) {
+            warren.insert(index as u32);
+        }
+
+        for index in removed {
+            assert!(warren.remove(index));
+        }
+
+        let selection = [0, 1, 5, 6, REGION_SIZE - 1];
+        let actual = warren.get_disjoint_mut(selection);
+
+        let expected = [Some(0u32), None, Some(5), Some(6), None];
+
+        for i in 0..5 {
+            assert_eq!(actual[i].is_some(), expected[i].is_some());
+            let a = actual[i].as_deref().unwrap();
+            let b = &expected[i].unwrap();
+            assert_eq!(a, b);
+        }
     }
 
     #[test]
