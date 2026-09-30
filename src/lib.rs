@@ -78,6 +78,8 @@ use super::*;
 
         for i in 0..5 {
             assert_eq!(actual[i].is_some(), expected[i].is_some());
+            if actual[i].is_none() { continue; }
+            
             let a = actual[i].as_deref().unwrap();
             let b = &expected[i].unwrap();
             assert_eq!(a, b);
@@ -103,6 +105,35 @@ use super::*;
 
         let actual: Vec<_> = warren.iter().map(|(index, value)| (index, *value)).collect();
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_hive_retain_mut() {
+        
+        let mut warren: Warren<u32> = Warren::with_capacity(REGION_SIZE + 2);
+        let removed: Vec<_> = (0..(REGION_SIZE + 2)).filter(|x| x % 2 == 1).collect();
+
+        for index in 0..(REGION_SIZE + 2) {
+            warren.insert(index as u32);
+        }
+        
+        warren.retain_mut(|x| { 
+            let keep = *x % 2 == 0; 
+            *x = 0; 
+            keep 
+        });
+
+        let expected: Vec<_> = (0..(REGION_SIZE + 2))
+            .filter(|index| !removed.contains(index))
+            .map(|index| (index, 0))
+            .collect();
+
+        let actual: Vec<_> = warren.iter().map(|(index, value)| (index, *value)).collect();
+        assert_eq!(actual, expected);
+
+        for (_i, x) in warren.iter() {
+            assert_eq!(*x, 0);
+        }
     }
 
     #[test]
