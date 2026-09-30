@@ -151,6 +151,17 @@ impl<T> Warren<T> {
         result
     }
 
+    pub fn retain(&mut self, mut f: impl FnMut(&T) -> bool) {
+        let ptr = self as *mut Warren<T>;
+        self.iter()
+            .for_each(|(i, x)| {
+                let keep = f(x);
+                if !keep { 
+                    unsafe { (*ptr).remove(i); } 
+                }
+            });
+    }
+
     fn _get_first_iter_location(&self) -> Option<(usize, usize)> {
         let region_index = self.guard.iter()
             .position(|x|{ *x != 0 });

@@ -85,6 +85,27 @@ use super::*;
     }
 
     #[test]
+    fn test_hive_retain() {
+        
+        let mut warren: Warren<u32> = Warren::with_capacity(REGION_SIZE + 2);
+        let removed: Vec<_> = (0..(REGION_SIZE + 2)).filter(|x| x % 2 == 1).collect();
+
+        for index in 0..(REGION_SIZE + 2) {
+            warren.insert(index as u32);
+        }
+        
+        warren.retain(|x| x % 2 == 0);
+
+        let expected: Vec<_> = (0..(REGION_SIZE + 2))
+            .filter(|index| !removed.contains(index))
+            .map(|index| (index, index as u32))
+            .collect();
+
+        let actual: Vec<_> = warren.iter().map(|(index, value)| (index, *value)).collect();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
     fn test_hive_correctness_u64() {
         const CEILING: usize = 1000000;
         const REMOVAL: usize = 500000;
