@@ -95,6 +95,12 @@ impl<T> Warren<T> {
         self._insert_in_region(region_index, value)
     }
 
+    pub fn insert_mut(&mut self, value: T) -> (usize, &mut T) {
+        let index = self.insert(value);
+        let mref = unsafe { self.data_regions.as_flattened_mut()[index].assume_init_mut() };
+        (index, mref)
+    }
+
     fn _remove_from_region(&mut self, region_idx: usize, internal_index: usize, real_index: usize) -> bool {
         let mask = (1 as MaskType) << internal_index;
         if self.guard[region_idx] == 0 || self.guard[region_idx] & mask == 0 { 
@@ -121,6 +127,12 @@ impl<T> Warren<T> {
 
         self.size -= success as usize;
         return success;
+    }
+
+    pub fn contains(&self, index: usize) -> bool {
+        let ri = index / REGION_SIZE;
+        let ii = index % REGION_SIZE;
+        return index < self.capacity && self.guard[ri] & (1 << ii) != 0;
     }
 
     pub fn get(&self, index: usize) -> Option<&T> {
@@ -173,6 +185,9 @@ impl<T> Warren<T> {
             });
     }
 
+    #[inline] pub fn size(&self) -> usize { self.size }
+    #[inline] pub fn capacity(&self) -> usize { self.capacity }
+
     fn _get_first_iter_location(&self) -> Option<(usize, usize)> {
         let region_index = self.guard.iter()
             .position(|x|{ *x != 0 });
@@ -204,10 +219,6 @@ impl<T> Warren<T> {
         
         return None;
     }
-
-    #[inline] pub fn size(&self) -> usize { self.size }
-    #[inline] pub fn capacity(&self) -> usize { self.capacity }
-
     pub fn iter(&self) -> WarrenIter<'_, T> { 
         let (region_index, internal_index) = self._get_first_iter_location()
             .unwrap_or_else(|| { (self.data_regions.len(), 0) });

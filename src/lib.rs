@@ -3,7 +3,6 @@ pub use warren::Warren;
 
 #[cfg(test)]
 mod tests {
-    use std::ops::Deref;
 
 use super::*;
     use warren::REGION_SIZE;
@@ -79,7 +78,7 @@ use super::*;
         for i in 0..5 {
             assert_eq!(actual[i].is_some(), expected[i].is_some());
             if actual[i].is_none() { continue; }
-            
+
             let a = actual[i].as_deref().unwrap();
             let b = &expected[i].unwrap();
             assert_eq!(a, b);
