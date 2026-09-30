@@ -210,7 +210,7 @@ use super::*;
         // Section 4: Test iteration reaches every element after removing elements.
 
         let mut iter_count1 = 0;
-        for item in warren.iter() {
+        for _item in warren.iter() {
             iter_count1 += 1;
         }
         
@@ -223,7 +223,7 @@ use super::*;
 
         // Section 5: Test space reuse.
 
-        for i in 0..num_removed_1 {
+        for _i in 0..num_removed_1 {
             let value = 69420;
             warren.insert(value);
         }
@@ -274,7 +274,7 @@ use super::*;
         // Section 9: Verifying mutable iterator (must be analyzed manually).
         
         let mut iter_count3 = 0;
-        for item in warren.iter() {
+        for _item in warren.iter() {
             iter_count3 += 1;
         }
         
