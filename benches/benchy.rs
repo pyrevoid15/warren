@@ -1,7 +1,7 @@
 
 use criterion::{criterion_group, criterion_main, Criterion};
 
-use warren::{Warren, warren::GenerationGuard};
+use warren_container::{Warren, warren::GenerationGuard};
 
 fn timing_warren(c: &mut Criterion) {
 
