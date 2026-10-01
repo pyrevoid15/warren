@@ -232,6 +232,19 @@ impl<T> Warren<T> {
     }
 }
 
+impl<T> Default for Warren<T> {
+    fn default() -> Self { Self::new() }
+}
+
+const MAX_WARREN_ITEMS_PRINTED: usize = 128;
+
+impl<T: std::fmt::Debug> std::fmt::Debug for Warren<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Warren ")?;
+        f.debug_list().entries(self.iter().take(MAX_WARREN_ITEMS_PRINTED)).finish_non_exhaustive()
+    }
+}
+
 pub struct WarrenIter<'a, T> {
     warren: &'a Warren<T>,
     region_index: usize,
