@@ -72,11 +72,14 @@ impl<T> Warren<T> {
     }
 
     //#[inline(always)] 
+    #[doc(hidden)]
     fn _region_is_empty(&self, region_idx: usize) -> bool { self.guard[region_idx] == 0 }
 
     //#[inline(always)] 
+    #[doc(hidden)]
     fn _region_is_full(&self, region_idx: usize) -> bool { self.guard[region_idx] == MaskType::MAX }
 
+    #[doc(hidden)]
     fn _find_insertion_region(&mut self) -> Option<usize> {
         while let Some(&region_idx) = self.region_idx_stack.last() {
             if self._region_is_full(region_idx) { 
@@ -88,6 +91,7 @@ impl<T> Warren<T> {
         return None;
     }
 
+    #[doc(hidden)]
     fn _add_new_region(&mut self) -> usize {
         debug_assert!(self.size == self.capacity);
 
@@ -102,6 +106,7 @@ impl<T> Warren<T> {
         return region_idx;
     } 
 
+    #[doc(hidden)]
     fn _insert_in_region(&mut self, region_idx: usize, value: T) -> usize {
         debug_assert!(!self._region_is_full(region_idx));
         
@@ -147,7 +152,8 @@ impl<T> Warren<T> {
         let mref = unsafe { self.data_regions.as_flattened_mut()[index].assume_init_mut() };
         (index, mref)
     }
-    
+
+    #[doc(hidden)]
     fn _remove_from_region(&mut self, region_idx: usize, internal_index: usize, real_index: usize) -> bool {
         let mask = (1 as MaskType) << internal_index;
         if self.guard[region_idx] == 0 || self.guard[region_idx] & mask == 0 { 
@@ -299,6 +305,7 @@ impl<T> Warren<T> {
     /// Returns the number of entries (active and inactive) in this Warren.
     #[inline] pub fn capacity(&self) -> usize { self.capacity }
 
+    #[doc(hidden)]
     fn _get_first_iter_location(&self) -> Option<(usize, usize)> {
         let region_index = self.guard.iter()
             .position(|x|{ *x != 0 });
@@ -309,6 +316,7 @@ impl<T> Warren<T> {
             })
     }
 
+    #[doc(hidden)]
     fn _get_next_iter_location(&self, (region_index, internal_index): (usize, usize)) -> Option<(usize, usize)> {
         if internal_index < REGION_SIZE {
             let next_internal_index = internal_index + 1;
