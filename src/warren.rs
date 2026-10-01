@@ -10,6 +10,8 @@ const MAX_WARREN_ITEMS_PRINTED: usize = 128;
 /// Since elements are stored contiguously, this structure lacks pointer stability.
 /// An index will point to the same element until removal, however.
 /// 
+/// Inspired by plf::hive, boost::container::hub, and colony-rs.
+/// 
 pub struct Warren<T> {
     data_regions: Vec<[MaybeUninit<T>; REGION_SIZE]>,
     guard: Vec<MaskType>,
@@ -117,6 +119,11 @@ impl<T> Warren<T> {
     /// Inserts a `value` into the Warren and returns the index it was placed into.
     /// 
     /// The index that is chosen can be anywhere in the range [0, capacity). If there are no empty indices, a new region is created.
+    /// ```
+    /// let mut warren = warren::Warren::new();
+    /// let index = warren.insert(9u32);
+    /// assert_eq!(warren.get(index), Some(9).as_ref());
+    /// ```
     #[allow(unused)]
     pub fn insert(&mut self, value: T) -> usize {
         let region_index = self._find_insertion_region()
@@ -128,12 +135,19 @@ impl<T> Warren<T> {
     /// Inserts a `value` into the Warren and returns the index and a mutable reference to the inserted `value` without needing to also call `Warren::get_mut`.
     /// 
     /// See `Warren::insert` for more detail on insertion.
+    /// 
+    /// ```
+    /// let mut warren = warren::Warren::new();
+    /// let (index, value) = warren.insert_mut(9u32);
+    /// *value = 10;
+    /// assert_eq!(warren.get(index), Some(10).as_ref());
+    /// ```
     pub fn insert_mut(&mut self, value: T) -> (usize, &mut T) {
         let index = self.insert(value);
         let mref = unsafe { self.data_regions.as_flattened_mut()[index].assume_init_mut() };
         (index, mref)
     }
-
+    
     fn _remove_from_region(&mut self, region_idx: usize, internal_index: usize, real_index: usize) -> bool {
         let mask = (1 as MaskType) << internal_index;
         if self.guard[region_idx] == 0 || self.guard[region_idx] & mask == 0 { 
@@ -150,6 +164,20 @@ impl<T> Warren<T> {
     /// 
     /// If there is a value at that `index`, this function drops that value, sets its flag to inactive, and returns `true`.
     /// Otherwise, returns `false`.
+    /// 
+    /// ```
+    /// let mut warren = warren::Warren::new();
+    /// let (index, value) = warren.insert_mut(9u32);
+    /// *value = 10;
+    /// assert_eq!(warren.get(index), Some(10).as_ref());
+    /// assert_eq!(warren.contains(index), true);
+    /// 
+    /// assert_eq!(warren.remove(index), true);
+    /// assert_eq!(warren.contains(index), false);
+    /// 
+    /// assert_eq!(warren.remove(index), false);
+    /// assert_eq!(warren.contains(index), false);
+    /// ```
     #[allow(unused)]
     pub fn remove(&mut self, index: usize) -> bool {
         if index >= self.capacity { return false; }
@@ -167,6 +195,12 @@ impl<T> Warren<T> {
     }
 
     /// Returns `true` if there is a value at that `index`. False otherwise.
+    /// ```
+    /// let mut warren = warren::Warren::<u32>::from_iter(vec![1, 3, 5]);
+    /// assert_eq!(warren.contains(0), true);
+    /// assert_eq!(warren.contains(1), true);
+    /// assert_eq!(warren.contains(3), false);
+    /// ```
     pub fn contains(&self, index: usize) -> bool {
         let ri = index / REGION_SIZE;
         let ii = index % REGION_SIZE;
@@ -174,6 +208,12 @@ impl<T> Warren<T> {
     }
 
     /// Returns an immutable reference if there is a value at that `index` inside an `Option`. Otherwise, returns `None`.
+    /// ```
+    /// let mut warren = warren::Warren::<u32>::from_iter(vec![1, 3, 5]);
+    /// assert_eq!(warren.get(0), Some(1).as_ref());
+    /// assert_eq!(warren.get(1), Some(3).as_ref());
+    /// assert_eq!(warren.get(2), Some(5).as_ref());
+    /// ```
     pub fn get(&self, index: usize) -> Option<&T> {
         let ri = index / REGION_SIZE;
         let ii = index % REGION_SIZE;
@@ -184,6 +224,13 @@ impl<T> Warren<T> {
     }
 
     /// Returns a mutable reference if there is a value at that `index` inside an `Option`. Otherwise, returns `None`.
+    /// ```
+    /// let mut warren = warren::Warren::<u32>::from_iter(vec![1, 3, 5]);
+    /// if let Some(x) = warren.get_mut(2) { 
+    ///     *x = 0;
+    /// };
+    /// assert_eq!(warren.get(2), Some(0).as_ref());
+    /// ```
     pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
         let ri = index / REGION_SIZE;
         let ii = index % REGION_SIZE;
@@ -195,6 +242,22 @@ impl<T> Warren<T> {
     
     /// Returns N mutable reference options for each index in `indices`. 
     /// When there is no value at that index, the corresponding option will be `None`.
+    /// Unlike `Vec::get_disjoint_mut`, this function does not ensure that indices are deduplicated.
+    /// 
+    /// ```
+    /// let mut warren = warren::Warren::<u32>::from_iter(vec![1, 3, 5, 6, 8]);
+    /// let mut opts = warren.get_disjoint_mut([0, 6]);
+    /// 
+    /// assert!(opts[0].is_some());
+    /// assert!(opts[1].is_none());
+    /// 
+    /// if let Some(x) = &mut opts[0] {
+    ///     **x = 0;
+    /// }
+    /// 
+    /// assert_eq!(warren.get(0), Some(0).as_ref());
+    /// 
+    /// ```
     pub fn get_disjoint_mut<const N: usize>(&mut self, indices: [usize; N]) -> [Option<&mut T>; N] {
         let ptr = self as *mut Warren<T>;
 
@@ -296,6 +359,11 @@ impl<T: std::fmt::Debug> std::fmt::Debug for Warren<T> {
 }
 
 impl<T> FromIterator<T> for Warren<T> {
+    /// Note: This does not return indices. If you want indices, may be better to call the following instead.  
+    /// ```
+    /// let mut warren = Warrem::new();
+    /// iter.into_iter().map(|x| { warren.insert(x) })
+    /// ``` 
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
         let mut warren = Warren::with_region_count_strict(8);
         iter.into_iter().for_each(|x|{ warren.insert(x); });
@@ -304,6 +372,11 @@ impl<T> FromIterator<T> for Warren<T> {
 }
 
 impl<T> Extend<T> for Warren<T> {
+    /// Note: This does not return indices. If you want indices, may be better to call the following instead.  
+    /// ```
+    /// let mut warren = Warrem::new();
+    /// iter.into_iter().map(|x| { warren.insert(x) })
+    /// ``` 
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
         iter.into_iter().for_each(|x|{ self.insert(x); });
     }
