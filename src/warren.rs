@@ -3,6 +3,168 @@ use std::{fmt::Debug, mem::MaybeUninit};
 type MaskType = u64;
 pub const REGION_SIZE: usize = MaskType::BITS as usize;
 
+pub trait WarrenIndex: private::Sealed + Sized + Eq + Debug {
+    fn real_index(&self) -> usize;
+}
+
+impl WarrenIndex for usize {
+    fn real_index(&self) -> usize { *self }
+}
+
+impl WarrenIndex for (usize, u8) {
+    fn real_index(&self) -> usize { self.0 }
+}
+
+pub struct FlagGuard {
+    guard: Vec<<FlagGuard as WarrenGuard>::MaskType>
+}
+pub struct GenerationGuard {
+    // guard: Vec<<GenerationGuard as WarrenGuard>::MaskType>,
+    generation: Vec<[u8; 64]> //TODO: Change "64" to Self::REGION_SIZE after implementing WarrenGuard.
+}
+
+pub trait WarrenGuard: private::Sealed {
+    type MaskType;
+    type IndexType: WarrenIndex;
+
+    const REGION_SIZE: usize = MaskType::BITS as usize;
+
+    #[doc(hidden)]
+    fn _with_region_count(region_count: usize) -> Self;
+
+    #[doc(hidden)]
+    fn _on_add_region(&mut self);
+
+    #[doc(hidden)]
+    fn _on_insert(&mut self, region_idx: usize) -> Self::IndexType;
+
+    #[doc(hidden)]
+    fn _region_is_full(&self, region_idx: usize) -> bool;
+
+    #[doc(hidden)]
+    fn _region_is_empty(&self, region_idx: usize) -> bool;
+
+    #[doc(hidden)]
+    fn _on_remove(&mut self, index: Self::IndexType) -> (bool, bool, usize);
+
+    #[doc(hidden)]
+    fn _check_active(&self, index: Self::IndexType) -> bool;
+    
+    #[doc(hidden)]
+    fn _get_first_iter_location(&self) -> Option<(usize, usize)>;
+    
+    #[doc(hidden)]
+    fn _get_next_iter_location(&self, ri_ii: (usize, usize)) -> Option<(usize, usize)>;
+
+    #[doc(hidden)]
+    fn _get_index(&self, region_idx: usize, internal_idx: usize) -> Self::IndexType;
+}
+
+impl WarrenGuard for FlagGuard {
+    type MaskType = u64;
+    type IndexType = usize;
+
+    fn _with_region_count(region_count: usize) -> Self {
+        let mut guard = Vec::with_capacity(region_count);
+        guard.resize_with(region_count, || 0);
+        Self { guard }
+    }
+
+    fn _on_add_region(&mut self) {
+        self.guard.push(0);
+    }
+
+    fn _on_insert(&mut self, region_idx: usize) -> Self::IndexType {
+        let internal_index = self.guard[region_idx].trailing_ones() as usize;
+        self.guard[region_idx] |= 1 << internal_index;
+
+        let real_index = region_idx * Self::REGION_SIZE + internal_index;
+        real_index
+    }
+
+    fn _region_is_full(&self, region_idx: usize) -> bool {
+        self.guard[region_idx] == Self::MaskType::MAX
+    }
+
+    fn _region_is_empty(&self, region_idx: usize) -> bool {
+        self.guard[region_idx] == 0
+    }
+
+    fn _on_remove(&mut self, index: Self::IndexType) -> (bool, bool, usize) {
+        
+        let region_index = index / REGION_SIZE;
+        let internal_index = index % REGION_SIZE;
+
+        let mask = (1 as MaskType) << internal_index;
+        if self.guard[region_index] == 0 || self.guard[region_index] & mask == 0 { 
+            return (false, false, 0); 
+        }
+
+        let was_full = self._region_is_full(region_index);
+        self.guard[region_index] &= !mask;
+
+        return (true, was_full, region_index);
+    }
+
+    fn _check_active(&self, index: Self::IndexType) -> bool {
+        let ri = index / REGION_SIZE;
+        let ii = index % REGION_SIZE;
+        return self.guard[ri] & (1 << ii) != 0;
+    }
+    
+    #[doc(hidden)]
+    fn _get_first_iter_location(&self) -> Option<(usize, usize)> {
+        let region_index = self.guard.iter()
+            .position(|x|{ *x != 0 });
+
+        region_index
+            .and_then(|i| {
+                Some((i, self.guard[i].trailing_zeros() as usize))
+            })
+    }
+
+    #[doc(hidden)]
+    fn _get_next_iter_location(&self, (region_index, internal_index): (usize, usize)) -> Option<(usize, usize)> {
+        if internal_index < REGION_SIZE {
+            let next_internal_index = internal_index + 1;
+            if next_internal_index < REGION_SIZE {
+                let lookup = self.guard[region_index] >> next_internal_index;
+                if lookup != 0 {
+                    let next_index = next_internal_index + lookup.trailing_zeros() as usize;
+                    return Some((region_index, next_index));
+                }
+            }
+        }
+
+        for next_region_index in (region_index + 1)..(self.guard.len()) {
+            if self._region_is_empty(next_region_index) { continue; }
+
+            let internal_index = self.guard[next_region_index].trailing_zeros() as usize;
+            return Some((next_region_index, internal_index));
+        }
+        
+        return None;
+    }
+
+
+    fn _get_index(&self, region_idx: usize, internal_idx: usize) -> Self::IndexType {
+        region_idx * REGION_SIZE + internal_idx
+    }
+}
+
+mod private {
+    use crate::warren::{FlagGuard, GenerationGuard};
+
+    pub trait Sealed {}
+
+    impl Sealed for FlagGuard {}
+    impl Sealed for GenerationGuard {}
+
+    impl Sealed for usize {}
+    impl Sealed for (usize, u8) {}
+}
+
+
 const MAX_WARREN_ITEMS_PRINTED: usize = 128;
 
 /// A growable data structure that reuses entry spaces in continuous memory.
@@ -12,15 +174,15 @@ const MAX_WARREN_ITEMS_PRINTED: usize = 128;
 /// 
 /// Inspired by plf::hive, boost::container::hub, and colony-rs.
 /// 
-pub struct Warren<T> {
+pub struct Warren<T, G: WarrenGuard = FlagGuard> {
     data_regions: Vec<[MaybeUninit<T>; REGION_SIZE]>,
-    guard: Vec<MaskType>,
+    guard: G,
     region_idx_stack: Vec<usize>,
     size: usize,
     capacity: usize
 }
 
-impl<T> Warren<T> {
+impl<T, G: WarrenGuard> Warren<T, G> {
     
     /// Creates a Warren with the default number of regions
     /// 
@@ -63,26 +225,17 @@ impl<T> Warren<T> {
         let mut data_regions = Vec::with_capacity(region_count);
         data_regions.resize_with(region_count, || unsafe{ std::mem::zeroed() });
 
-        let mut guard = Vec::with_capacity(region_count);
-        guard.resize_with(region_count, || 0);
+        let guard = G::_with_region_count(region_count);
 
         let region_idx_stack = (0..region_count).rev().collect();
 
         Self { data_regions, guard, region_idx_stack, size: 0, capacity }
     }
 
-    //#[inline(always)] 
-    #[doc(hidden)]
-    fn _region_is_empty(&self, region_idx: usize) -> bool { self.guard[region_idx] == 0 }
-
-    //#[inline(always)] 
-    #[doc(hidden)]
-    fn _region_is_full(&self, region_idx: usize) -> bool { self.guard[region_idx] == MaskType::MAX }
-
     #[doc(hidden)]
     fn _find_insertion_region(&mut self) -> Option<usize> {
         while let Some(&region_idx) = self.region_idx_stack.last() {
-            if self._region_is_full(region_idx) { 
+            if self.guard._region_is_full(region_idx) { 
                 self.region_idx_stack.pop(); continue;
             }
             
@@ -95,7 +248,7 @@ impl<T> Warren<T> {
     fn _add_new_region(&mut self) -> usize {
         debug_assert!(self.size == self.capacity);
 
-        self.guard.push(0);
+        self.guard._on_add_region();
 
         let region_idx = self.data_regions.len();
         self.data_regions.push(unsafe { std::mem::zeroed() });
@@ -107,18 +260,17 @@ impl<T> Warren<T> {
     } 
 
     #[doc(hidden)]
-    fn _insert_in_region(&mut self, region_idx: usize, value: T) -> usize {
-        debug_assert!(!self._region_is_full(region_idx));
+    fn _insert_in_region(&mut self, region_idx: usize, value: T) -> G::IndexType {
+        debug_assert!(!self.guard._region_is_full(region_idx));
         
-        let internal_index = self.guard[region_idx].trailing_ones() as usize;
-        self.guard[region_idx] |= 1 << internal_index;
+        let index = self.guard._on_insert(region_idx);
 
-        let real_index = internal_index + REGION_SIZE * region_idx;
+        let real_index = index.real_index();
         self.data_regions.as_flattened_mut()[real_index] = MaybeUninit::new(value);
 
         self.size += 1;
 
-        return real_index;
+        return index;
     }
 
     /// Inserts a `value` into the Warren and returns the index it was placed into.
@@ -130,7 +282,7 @@ impl<T> Warren<T> {
     /// assert_eq!(warren.get(index), Some(9).as_ref());
     /// ```
     #[allow(unused)]
-    pub fn insert(&mut self, value: T) -> usize {
+    pub fn insert(&mut self, value: T) -> G::IndexType {
         let region_index = self._find_insertion_region()
             .unwrap_or_else(|| { self._add_new_region() });
 
@@ -147,23 +299,10 @@ impl<T> Warren<T> {
     /// *value = 10;
     /// assert_eq!(warren.get(index), Some(10).as_ref());
     /// ```
-    pub fn insert_mut(&mut self, value: T) -> (usize, &mut T) {
+    pub fn insert_mut(&mut self, value: T) -> (G::IndexType, &mut T) {
         let index = self.insert(value);
-        let mref = unsafe { self.data_regions.as_flattened_mut()[index].assume_init_mut() };
+        let mref = unsafe { self.data_regions.as_flattened_mut()[index.real_index()].assume_init_mut() };
         (index, mref)
-    }
-
-    #[doc(hidden)]
-    fn _remove_from_region(&mut self, region_idx: usize, internal_index: usize, real_index: usize) -> bool {
-        let mask = (1 as MaskType) << internal_index;
-        if self.guard[region_idx] == 0 || self.guard[region_idx] & mask == 0 { 
-            return false; 
-        }
-
-        self.guard[region_idx] &= !mask;
-        unsafe { self.data_regions.as_flattened_mut()[real_index].assume_init_drop(); }
-
-        return true;
     }
 
     /// Removes the value at the given `index`.
@@ -185,16 +324,18 @@ impl<T> Warren<T> {
     /// assert_eq!(warren.contains(index), false);
     /// ```
     #[allow(unused)]
-    pub fn remove(&mut self, index: usize) -> bool {
-        if index >= self.capacity { return false; }
+    pub fn remove(&mut self, index: G::IndexType) -> bool {
+        let real_index = index.real_index();
+        if real_index >= self.capacity { return false; }
 
-        let region_index = index / REGION_SIZE;
-        let internal_index = index % REGION_SIZE;
+        let (success, was_full, region_index) = self.guard._on_remove(index);
 
-        let was_full = self._region_is_full(region_index);
-        let success = self._remove_from_region(region_index, internal_index, index);
-
-        if success && was_full { self.region_idx_stack.push(region_index); }
+        if success {
+            unsafe { self.data_regions.as_flattened_mut()[real_index].assume_init_drop(); }
+            if was_full {
+                self.region_idx_stack.push(region_index);
+            }
+        }
 
         self.size -= success as usize;
         return success;
@@ -207,10 +348,8 @@ impl<T> Warren<T> {
     /// assert_eq!(warren.contains(1), true);
     /// assert_eq!(warren.contains(3), false);
     /// ```
-    pub fn contains(&self, index: usize) -> bool {
-        let ri = index / REGION_SIZE;
-        let ii = index % REGION_SIZE;
-        return index < self.capacity && self.guard[ri] & (1 << ii) != 0;
+    pub fn contains(&self, index: G::IndexType) -> bool {
+        return index.real_index() < self.capacity && self.guard._check_active(index);
     }
 
     /// Returns an immutable reference if there is a value at that `index` inside an `Option`. Otherwise, returns `None`.
@@ -220,11 +359,10 @@ impl<T> Warren<T> {
     /// assert_eq!(warren.get(1), Some(3).as_ref());
     /// assert_eq!(warren.get(2), Some(5).as_ref());
     /// ```
-    pub fn get(&self, index: usize) -> Option<&T> {
-        let ri = index / REGION_SIZE;
-        let ii = index % REGION_SIZE;
-        if self.guard[ri] & (1 << ii) != 0 {
-            self.data_regions.as_flattened().get(index)
+    pub fn get(&self, index: G::IndexType) -> Option<&T> {
+        let real_index = index.real_index();
+        if self.guard._check_active(index) {
+            self.data_regions.as_flattened().get(real_index)
                 .and_then(|x| unsafe { Some(x.assume_init_ref()) })
         } else { None }
     }
@@ -237,11 +375,10 @@ impl<T> Warren<T> {
     /// };
     /// assert_eq!(warren.get(2), Some(0).as_ref());
     /// ```
-    pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
-        let ri = index / REGION_SIZE;
-        let ii = index % REGION_SIZE;
-        if self.guard[ri] & (1 << ii) != 0 {
-            self.data_regions.as_flattened_mut().get_mut(index)
+    pub fn get_mut(&mut self, index: G::IndexType) -> Option<&mut T> {
+        let real_index = index.real_index();
+        if self.guard._check_active(index) {
+            self.data_regions.as_flattened_mut().get_mut(real_index)
                 .and_then(|x| unsafe { Some(x.assume_init_mut()) })
         } else { None }
     }
@@ -264,8 +401,8 @@ impl<T> Warren<T> {
     /// assert_eq!(warren.get(0), Some(0).as_ref());
     /// 
     /// ```
-    pub fn get_disjoint_mut<const N: usize>(&mut self, indices: [usize; N]) -> [Option<&mut T>; N] {
-        let ptr = self as *mut Warren<T>;
+    pub fn get_disjoint_mut<const N: usize>(&mut self, indices: [G::IndexType; N]) -> [Option<&mut T>; N] {
+        let ptr = self as *mut Warren<T, G>;
 
         let result = indices.map(|index| {
             unsafe { (*ptr).get_mut(index) }
@@ -276,7 +413,7 @@ impl<T> Warren<T> {
 
     /// Removes all elements in the Warren for which `f`` is false.
     pub fn retain(&mut self, mut f: impl FnMut(&T) -> bool) {
-        let ptr = self as *mut Warren<T>;
+        let ptr = self as *mut Warren<T, G>;
         self.iter()
             .for_each(|(i, x)| {
                 let keep = f(x);
@@ -289,7 +426,7 @@ impl<T> Warren<T> {
     /// Removes all elements in the Warren for which `f`` is false. 
     /// `f` may also mutate the elements.
     pub fn retain_mut(&mut self, mut f: impl FnMut(&mut T) -> bool) {
-        let ptr = self as *mut Warren<T>;
+        let ptr = self as *mut Warren<T, G>;
         self.iter_mut()
             .for_each(|(i, x)| {
                 let keep = f(x);
@@ -305,68 +442,36 @@ impl<T> Warren<T> {
     /// Returns the number of entries (active and inactive) in this Warren.
     #[inline] pub fn capacity(&self) -> usize { self.capacity }
 
-    #[doc(hidden)]
-    fn _get_first_iter_location(&self) -> Option<(usize, usize)> {
-        let region_index = self.guard.iter()
-            .position(|x|{ *x != 0 });
-
-        region_index
-            .and_then(|i| {
-                Some((i, self.guard[i].trailing_zeros() as usize))
-            })
-    }
-
-    #[doc(hidden)]
-    fn _get_next_iter_location(&self, (region_index, internal_index): (usize, usize)) -> Option<(usize, usize)> {
-        if internal_index < REGION_SIZE {
-            let next_internal_index = internal_index + 1;
-            if next_internal_index < REGION_SIZE {
-                let lookup = self.guard[region_index] >> next_internal_index;
-                if lookup != 0 {
-                    let next_index = next_internal_index + lookup.trailing_zeros() as usize;
-                    return Some((region_index, next_index));
-                }
-            }
-        }
-
-        for next_region_index in (region_index + 1)..(self.data_regions.len()) {
-            if self._region_is_empty(next_region_index) { continue; }
-
-            let internal_index = self.guard[next_region_index].trailing_zeros() as usize;
-            return Some((next_region_index, internal_index));
-        }
-        
-        return None;
-    }
+    
 
     /// Creates an iterator for this Warren.
-    pub fn iter(&self) -> WarrenIter<'_, T> { 
-        let (region_index, internal_index) = self._get_first_iter_location()
+    pub fn iter(&self) -> WarrenIter<'_, T, G> { 
+        let (region_index, internal_index) = self.guard._get_first_iter_location()
             .unwrap_or_else(|| { (self.data_regions.len(), 0) });
         WarrenIter { warren: &self, region_index, internal_index }
     }
 
     /// Creates an iterator for this Warren that can be used to mutate the elements inside the Warren.
-    pub fn iter_mut(&mut self) -> WarrenIterMut<'_, T> {
-        let (region_index, internal_index) = self._get_first_iter_location()
+    pub fn iter_mut(&mut self) -> WarrenIterMut<'_, T, G> {
+        let (region_index, internal_index) = self.guard._get_first_iter_location()
             .unwrap_or_else(|| { (self.data_regions.len(), 0) });
         WarrenIterMut { warren: self, region_index, internal_index }
     }
 }
 
-impl<T> Default for Warren<T> {
+impl<T, G: WarrenGuard> Default for Warren<T, G> {
     fn default() -> Self { Self::new() }
 }
 
 
-impl<T: std::fmt::Debug> std::fmt::Debug for Warren<T> {
+impl<T: std::fmt::Debug, G: WarrenGuard> std::fmt::Debug for Warren<T, G> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Warren ")?;
         f.debug_list().entries(self.iter().take(MAX_WARREN_ITEMS_PRINTED)).finish_non_exhaustive()
     }
 }
 
-impl<T> FromIterator<T> for Warren<T> {
+impl<T, G: WarrenGuard> FromIterator<T> for Warren<T, G> {
     /// Note: This does not return indices. If you want indices, may be better to call the following instead.  
     /// ```
     /// let mut warren = Warrem::new();
@@ -379,7 +484,7 @@ impl<T> FromIterator<T> for Warren<T> {
     }
 }
 
-impl<T> Extend<T> for Warren<T> {
+impl<T, G: WarrenGuard> Extend<T> for Warren<T, G> {
     /// Note: This does not return indices. If you want indices, may be better to call the following instead.  
     /// ```
     /// let mut warren = Warrem::new();
@@ -390,59 +495,61 @@ impl<T> Extend<T> for Warren<T> {
     }
 }
 
-pub struct WarrenIter<'a, T> {
-    warren: &'a Warren<T>,
+pub struct WarrenIter<'a, T, G: WarrenGuard> {
+    warren: &'a Warren<T, G>,
     region_index: usize,
     internal_index: usize,
 }
 
-impl<'a, T> Iterator for WarrenIter<'a, T> {
-    type Item = (usize, &'a T);
+impl<'a, T, G: WarrenGuard> Iterator for WarrenIter<'a, T, G> {
+    type Item = (G::IndexType, &'a T);
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.region_index >= self.warren.data_regions.len() {
             return None;
         }
 
-        let real_index = self.region_index * REGION_SIZE + self.internal_index;
-        let next_location = self.warren._get_next_iter_location((self.region_index, self.internal_index));
+        let index = self.warren.guard._get_index(self.region_index, self.internal_index);
+        let next_location = self.warren.guard._get_next_iter_location((self.region_index, self.internal_index));
         (self.region_index, self.internal_index) = next_location
             .unwrap_or((self.warren.data_regions.len(), 0));
 
-        Some((real_index, unsafe { self.warren.data_regions.as_flattened()[real_index].assume_init_ref() }))
+        let real_index = index.real_index();
+        Some((index, unsafe { self.warren.data_regions.as_flattened()[real_index].assume_init_ref() }))
     }
 }
 
-impl<T: Debug> Debug for WarrenIter<'_, T> {
+impl<T: Debug, G: WarrenGuard> Debug for WarrenIter<'_, T, G> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WarrenIter").field("warren", &self.warren).field("region_index", &self.region_index).field("internal_index", &self.internal_index).finish()
     }
 }
 
-pub struct WarrenIterMut<'a, T> {
-    warren: &'a mut Warren<T>,
+pub struct WarrenIterMut<'a, T, G: WarrenGuard> {
+    warren: &'a mut Warren<T, G>,
     region_index: usize,
     internal_index: usize,
 }
 
-impl<'a, T> Iterator for WarrenIterMut<'a, T> {
-    type Item = (usize, &'a mut T);
+impl<'a, T, G: WarrenGuard> Iterator for WarrenIterMut<'a, T, G> {
+    type Item = (G::IndexType, &'a mut T);
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.region_index >= self.warren.data_regions.len() {
             return None;
         }
 
-        let real_index = self.region_index * REGION_SIZE + self.internal_index;
-        let next_location = self.warren._get_next_iter_location((self.region_index, self.internal_index));
+        let index = self.warren.guard._get_index(self.region_index, self.internal_index);
+        let next_location = self.warren.guard._get_next_iter_location((self.region_index, self.internal_index));
         (self.region_index, self.internal_index) = next_location
             .unwrap_or((self.warren.data_regions.len(), 0));
 
-        Some((real_index, unsafe { &mut *self.warren.data_regions.as_flattened_mut()[real_index].as_mut_ptr() }))
+        let real_index = index.real_index();
+        Some((index, unsafe { &mut *self.warren.data_regions.as_flattened_mut()[real_index].as_mut_ptr() }))
     }
 }
 
-impl<T: Debug> Debug for WarrenIterMut<'_, T> {
+impl<T: Debug, G: WarrenGuard> Debug for WarrenIterMut<'_, T, G> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WarrenIterMut").field("warren", &self.warren).field("region_index", &self.region_index).field("internal_index", &self.internal_index).finish()
     }
