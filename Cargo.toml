@@ -4,9 +4,10 @@ version = "0.2.0"
 edition = "2024"
 repository = "https://github.com/pyrevoid15/warren"
 readme = "README.md"
+license = "LGPL"
+keywords = ["container", "hive"]
 description = """
-A data structure similar to plf::hive and boost::container::hub written in Rust. 
-Made for fast reuse of space and fast iteration over active entries.
+A data structure made for fast reuse of space and fast iteration over active entries.
 """
 
 [profile.dev]
