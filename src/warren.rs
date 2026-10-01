@@ -15,6 +15,16 @@ impl WarrenIndex for (usize, u8) {
     fn real_index(&self) -> usize { self.0 }
 }
 
+/// A trait determining the capabilities of a Warren.
+/// Types with this trait track which slots in each region are active and how indices are reused.
+///
+/// Implementations decide:
+/// - which index type is returned
+/// - how insertion/removal updates occupancy
+/// - how active entries are validated
+///
+/// `FlagGuard` is the default, and `GenerationGuard` adds generation checks
+/// so stale indices cannot accidentally access old values.
 pub trait WarrenGuard: private::Sealed {
     type MaskType;
     type IndexType: WarrenIndex;
@@ -52,6 +62,9 @@ pub trait WarrenGuard: private::Sealed {
     fn _get_index(&self, region_idx: usize, internal_idx: usize) -> Self::IndexType;
 }
 
+/// Default guard that uses a bitmask per region.
+/// Each set bit means a corresponding entry is currently occupied.
+/// Has no generation checks.
 pub struct FlagGuard {
     guard: Vec<<FlagGuard as WarrenGuard>::MaskType>
 }
@@ -147,6 +160,7 @@ impl WarrenGuard for FlagGuard {
     }
 }
 
+/// Guard that stores a generation counter per entry to reject stale indices.
 pub struct GenerationGuard {
     guard: FlagGuard,
     generation: Vec<[u8; REGION_SIZE]> //TODO: Change "64" to Self::REGION_SIZE after implementing WarrenGuard.
@@ -230,6 +244,10 @@ const MAX_WARREN_ITEMS_PRINTED: usize = 128;
 /// Has constant-time insertion and removal, and fast iteration. 
 /// Since elements are stored contiguously, this structure lacks pointer stability.
 /// An index will point to the same element until removal, however.
+/// 
+/// /// The `G` parameter controls how active slots and indices are tracked.
+/// Use `FlagGuard` for the default behavior, or `GenerationGuard` when you
+/// need stale-index protection.
 /// 
 /// Inspired by plf::hive, boost::container::hub, and colony-rs.
 /// 
