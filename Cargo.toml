@@ -14,5 +14,10 @@ opt-level = 3
 
 [dev-dependencies]
 rand = "0.10.3"
+criterion = "0.8.2"
 
 [dependencies]
+
+[[bench]]
+name = "benchy"
+harness = false
