@@ -1,8 +1,15 @@
-use std::mem::MaybeUninit;
+use std::{fmt::Debug, mem::MaybeUninit};
 
-type MaskType = u32;
+type MaskType = u64;
 pub const REGION_SIZE: usize = MaskType::BITS as usize;
 
+const MAX_WARREN_ITEMS_PRINTED: usize = 128;
+
+/// A growable data structure that reuses entry spaces in continuous memory.
+/// Has constant-time insertion and removal, and fast iteration. 
+/// Since elements are stored contiguously, this structure lacks pointer stability.
+/// An index will point to the same element until removal, however.
+/// 
 pub struct Warren<T> {
     data_regions: Vec<[MaybeUninit<T>; REGION_SIZE]>,
     guard: Vec<MaskType>,
@@ -12,41 +19,61 @@ pub struct Warren<T> {
 }
 
 impl<T> Warren<T> {
+    
+    /// Creates a Warren with the default number of regions
+    /// 
+    /// This function is equivalent to: `Warren::<T>::with_region_count(1)`
     #[inline] 
     #[allow(unused)]
     pub fn new() -> Self {
         Self::with_region_count(1)
     }
 
+    /// Creates a Warren with the minimum number of regions which is
+    /// 
+    /// (a) greater than or equal to capacity / REGION_SIZE and
+    /// (b) a power of two
+    /// 
+    /// This function is equivalent to: `Warren::<T>::with_region_count(ceil(capacity as f32 / REGION_SIZE as f32))`
     #[inline]
-    #[allow(unused)]
+    #[allow(unused)]    
     pub fn with_capacity(capacity: usize) -> Self {
         assert!(capacity > 0);
         let num_regions = capacity / REGION_SIZE + (capacity % REGION_SIZE > 0) as usize;
         Self::with_region_count(num_regions)
     }
-
+    
+    /// Creates a Warren with a number of regions which is the next highest power of two to the given `region_count`.
+    #[inline]
     #[allow(unused)]
     pub fn with_region_count(region_count: usize) -> Self {
+        let real_region_count = region_count.next_power_of_two();
+        Self::with_region_count_strict(real_region_count)
+    }
+
+    /// Creates a Warren with the exact number of regions `region_count`.
+    #[allow(unused)]
+    pub fn with_region_count_strict(region_count: usize) -> Self {
         assert!(region_count > 0);
 
-        let real_region_count = region_count.next_power_of_two();
+        let capacity = region_count * REGION_SIZE;
 
-        let capacity = real_region_count * REGION_SIZE;
+        let mut data_regions = Vec::with_capacity(region_count);
+        data_regions.resize_with(region_count, || unsafe{ std::mem::zeroed() });
 
-        let mut data_regions = Vec::with_capacity(real_region_count);
-        data_regions.resize_with(real_region_count, || unsafe{ std::mem::zeroed() });
+        let mut guard = Vec::with_capacity(region_count);
+        guard.resize_with(region_count, || 0);
 
-        let mut guard = Vec::with_capacity(real_region_count);
-        guard.resize_with(real_region_count, || 0);
-
-        let region_idx_stack = (0..real_region_count).rev().collect();
+        let region_idx_stack = (0..region_count).rev().collect();
 
         Self { data_regions, guard, region_idx_stack, size: 0, capacity }
     }
 
-    #[inline] fn _region_is_empty(&self, region_idx: usize) -> bool { self.guard[region_idx] == 0 }
-    #[inline] fn _region_is_full(&self, region_idx: usize) -> bool { self.guard[region_idx] == MaskType::MAX }
+    //#[inline(always)] 
+    fn _region_is_empty(&self, region_idx: usize) -> bool { self.guard[region_idx] == 0 }
+
+    //#[inline(always)] 
+    fn _region_is_full(&self, region_idx: usize) -> bool { self.guard[region_idx] == MaskType::MAX }
 
     fn _find_insertion_region(&mut self) -> Option<usize> {
         while let Some(&region_idx) = self.region_idx_stack.last() {
@@ -87,6 +114,9 @@ impl<T> Warren<T> {
         return real_index;
     }
 
+    /// Inserts a `value` into the Warren and returns the index it was placed into.
+    /// 
+    /// The index that is chosen can be anywhere in the range [0, capacity). If there are no empty indices, a new region is created.
     #[allow(unused)]
     pub fn insert(&mut self, value: T) -> usize {
         let region_index = self._find_insertion_region()
@@ -95,6 +125,9 @@ impl<T> Warren<T> {
         self._insert_in_region(region_index, value)
     }
 
+    /// Inserts a `value` into the Warren and returns the index and a mutable reference to the inserted `value` without needing to also call `Warren::get_mut`.
+    /// 
+    /// See `Warren::insert` for more detail on insertion.
     pub fn insert_mut(&mut self, value: T) -> (usize, &mut T) {
         let index = self.insert(value);
         let mref = unsafe { self.data_regions.as_flattened_mut()[index].assume_init_mut() };
@@ -113,6 +146,10 @@ impl<T> Warren<T> {
         return true;
     }
 
+    /// Removes the value at the given `index`.
+    /// 
+    /// If there is a value at that `index`, this function drops that value, sets its flag to inactive, and returns `true`.
+    /// Otherwise, returns `false`.
     #[allow(unused)]
     pub fn remove(&mut self, index: usize) -> bool {
         if index >= self.capacity { return false; }
@@ -129,12 +166,14 @@ impl<T> Warren<T> {
         return success;
     }
 
+    /// Returns `true` if there is a value at that `index`. False otherwise.
     pub fn contains(&self, index: usize) -> bool {
         let ri = index / REGION_SIZE;
         let ii = index % REGION_SIZE;
         return index < self.capacity && self.guard[ri] & (1 << ii) != 0;
     }
 
+    /// Returns an immutable reference if there is a value at that `index` inside an `Option`. Otherwise, returns `None`.
     pub fn get(&self, index: usize) -> Option<&T> {
         let ri = index / REGION_SIZE;
         let ii = index % REGION_SIZE;
@@ -144,6 +183,7 @@ impl<T> Warren<T> {
         } else { None }
     }
 
+    /// Returns a mutable reference if there is a value at that `index` inside an `Option`. Otherwise, returns `None`.
     pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
         let ri = index / REGION_SIZE;
         let ii = index % REGION_SIZE;
@@ -153,6 +193,8 @@ impl<T> Warren<T> {
         } else { None }
     }
     
+    /// Returns N mutable reference options for each index in `indices`. 
+    /// When there is no value at that index, the corresponding option will be `None`.
     pub fn get_disjoint_mut<const N: usize>(&mut self, indices: [usize; N]) -> [Option<&mut T>; N] {
         let ptr = self as *mut Warren<T>;
 
@@ -163,6 +205,7 @@ impl<T> Warren<T> {
         result
     }
 
+    /// Removes all elements in the Warren for which `f`` is false.
     pub fn retain(&mut self, mut f: impl FnMut(&T) -> bool) {
         let ptr = self as *mut Warren<T>;
         self.iter()
@@ -174,6 +217,8 @@ impl<T> Warren<T> {
             });
     }
 
+    /// Removes all elements in the Warren for which `f`` is false. 
+    /// `f` may also mutate the elements.
     pub fn retain_mut(&mut self, mut f: impl FnMut(&mut T) -> bool) {
         let ptr = self as *mut Warren<T>;
         self.iter_mut()
@@ -185,7 +230,10 @@ impl<T> Warren<T> {
             });
     }
 
+    /// Returns the number of elements in this Warren.
     #[inline] pub fn size(&self) -> usize { self.size }
+
+    /// Returns the number of entries (active and inactive) in this Warren.
     #[inline] pub fn capacity(&self) -> usize { self.capacity }
 
     fn _get_first_iter_location(&self) -> Option<(usize, usize)> {
@@ -219,12 +267,15 @@ impl<T> Warren<T> {
         
         return None;
     }
+
+    /// Creates an iterator for this Warren.
     pub fn iter(&self) -> WarrenIter<'_, T> { 
         let (region_index, internal_index) = self._get_first_iter_location()
             .unwrap_or_else(|| { (self.data_regions.len(), 0) });
         WarrenIter { warren: &self, region_index, internal_index }
     }
 
+    /// Creates an iterator for this Warren that can be used to mutate the elements inside the Warren.
     pub fn iter_mut(&mut self) -> WarrenIterMut<'_, T> {
         let (region_index, internal_index) = self._get_first_iter_location()
             .unwrap_or_else(|| { (self.data_regions.len(), 0) });
@@ -236,12 +287,25 @@ impl<T> Default for Warren<T> {
     fn default() -> Self { Self::new() }
 }
 
-const MAX_WARREN_ITEMS_PRINTED: usize = 128;
 
 impl<T: std::fmt::Debug> std::fmt::Debug for Warren<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Warren ")?;
         f.debug_list().entries(self.iter().take(MAX_WARREN_ITEMS_PRINTED)).finish_non_exhaustive()
+    }
+}
+
+impl<T> FromIterator<T> for Warren<T> {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        let mut warren = Warren::with_region_count_strict(8);
+        iter.into_iter().for_each(|x|{ warren.insert(x); });
+        warren
+    }
+}
+
+impl<T> Extend<T> for Warren<T> {
+    fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+        iter.into_iter().for_each(|x|{ self.insert(x); });
     }
 }
 
@@ -268,6 +332,12 @@ impl<'a, T> Iterator for WarrenIter<'a, T> {
     }
 }
 
+impl<T: Debug> Debug for WarrenIter<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WarrenIter").field("warren", &self.warren).field("region_index", &self.region_index).field("internal_index", &self.internal_index).finish()
+    }
+}
+
 pub struct WarrenIterMut<'a, T> {
     warren: &'a mut Warren<T>,
     region_index: usize,
@@ -291,3 +361,8 @@ impl<'a, T> Iterator for WarrenIterMut<'a, T> {
     }
 }
 
+impl<T: Debug> Debug for WarrenIterMut<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WarrenIterMut").field("warren", &self.warren).field("region_index", &self.region_index).field("internal_index", &self.internal_index).finish()
+    }
+}
