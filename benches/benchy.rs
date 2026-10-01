@@ -243,7 +243,7 @@ fn times_for_comparison_vec(c: &mut Criterion) {
 
     c.bench_function("Vec -- Iterate with mutability 1 million u64 elements.", 
         |b| b.iter(|| { 
-            v.iter_mut().for_each(|_x| { std::hint::black_box(0); });
+            v.iter_mut().for_each(|_x| { std::hint::black_box(0); }); 
         })
     );
 }

@@ -4,6 +4,8 @@ pub use warren::Warren;
 #[cfg(test)]
 mod tests {
 
+use crate::warren::GenerationGuard;
+
 use super::*;
     use warren::REGION_SIZE;
     use rand::Rng;
@@ -125,6 +127,147 @@ use super::*;
         let expected: Vec<_> = (0..(REGION_SIZE + 2))
             .filter(|index| !removed.contains(index))
             .map(|index| (index, 0))
+            .collect();
+
+        let actual: Vec<_> = warren.iter().map(|(index, value)| (index, *value)).collect();
+        assert_eq!(actual, expected);
+
+        for (_i, x) in warren.iter() {
+            assert_eq!(*x, 0);
+        }
+    }
+
+    #[test]
+    fn test_hive_generation_correctly_increments_generation() {
+        let mut warren : Warren<u32, GenerationGuard> = Warren::new();
+
+        for i in 1..9 {
+            let (index, g) = warren.insert(0);
+            assert_eq!(g, i);
+
+            assert_eq!(warren.remove((index, g)), true);
+            assert_eq!(warren.remove((index, g - 1)), false);
+            assert_eq!(warren.remove((index, g + 1)), false);
+        }
+    }
+
+    #[test]
+    fn test_hive_generation_iter_skips_removed_slots() {
+        let mut warren: Warren<u32, GenerationGuard> = Warren::with_capacity(REGION_SIZE + 2);
+        let removed = [1, 3, REGION_SIZE - 1, REGION_SIZE];
+
+        for index in 0..(REGION_SIZE + 2) {
+            warren.insert(index as u32);
+        }
+        for index in removed {
+            assert!(warren.remove((index, 1)));
+        }
+
+        let expected: Vec<_> = (0..(REGION_SIZE + 2))
+            .filter(|index| !removed.contains(index))
+            .map(|index| ((index, 1), index as u32))
+            .collect();
+
+        let actual: Vec<_> = warren.iter().map(|(index, value)| (index, *value)).collect();
+        assert_eq!(actual, expected);
+
+        for (index, value) in warren.iter_mut() {
+            *value += 1;
+            assert_eq!(*value, index.0 as u32 + 1);
+        }
+    }
+
+    #[test]
+    fn test_hive_generation_slots_replaced() {
+        let mut warren: Warren<u32, GenerationGuard> = Warren::with_capacity(REGION_SIZE + 2);
+        let removed = [1, 3, REGION_SIZE - 1, REGION_SIZE];
+
+        for index in 0..(REGION_SIZE + 2) {
+            warren.insert(index as u32);
+        }
+
+        for index in removed {
+            assert!(warren.remove((index, 1)));
+        }
+
+        for _index in removed {
+            warren.insert(69420);
+        }
+        
+        removed.iter().for_each(|&i| {
+            assert_eq!(*warren.get((i, 2)).expect("Found index was not reused."), 69420);
+        });
+    }
+
+    #[test]
+    fn test_hive_generation_disjoint_selection() {
+        
+        let mut warren: Warren<u32, GenerationGuard> = Warren::with_capacity(REGION_SIZE + 2);
+        let removed = [1, 3, REGION_SIZE - 1, REGION_SIZE];
+
+        for index in 0..(REGION_SIZE + 2) {
+            warren.insert(index as u32);
+        }
+
+        for index in removed {
+            assert!(warren.remove((index, 1)));
+        }
+
+        let selection = [(0, 1), (1, 1), (5, 1), (6, 1), (REGION_SIZE - 1, 1)];
+        let actual = warren.get_disjoint_mut(selection);
+
+        let expected = [Some(0u32), None, Some(5), Some(6), None];
+
+        for i in 0..5 {
+            assert_eq!(actual[i].is_some(), expected[i].is_some());
+            if actual[i].is_none() { continue; }
+
+            let a = actual[i].as_deref().unwrap();
+            let b = &expected[i].unwrap();
+            assert_eq!(a, b);
+        }
+    }
+
+    #[test]
+    fn test_hive_generation_retain() {
+        
+        let mut warren: Warren<u32, GenerationGuard> = Warren::with_capacity(REGION_SIZE + 2);
+        let removed: Vec<_> = (0..(REGION_SIZE + 2)).filter(|x| x % 2 == 1).collect();
+
+        for index in 0..(REGION_SIZE + 2) {
+            warren.insert(index as u32);
+        }
+        
+        warren.retain(|x| x % 2 == 0);
+
+        let expected: Vec<_> = (0..(REGION_SIZE + 2))
+            .filter(|index| !removed.contains(index))
+            .map(|index| ((index, 1), index as u32))
+            .collect();
+
+        let actual: Vec<_> = warren.iter().map(|(index, value)| (index, *value)).collect();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_hive_generation_retain_mut() {
+        
+        let mut warren: Warren<u32, GenerationGuard> = Warren::with_capacity(REGION_SIZE + 2);
+        let removed: Vec<_> = (0..(REGION_SIZE + 2)).filter(|x| x % 2 == 1).collect();
+
+        for index in 0..(REGION_SIZE + 2) {
+            warren.insert(index as u32);
+        }
+        
+        warren.retain_mut(|x| { 
+            let keep = *x % 2 == 0; 
+            *x = 0; 
+            keep 
+        });
+
+        let expected: Vec<_> = (0..(REGION_SIZE + 2))
+            .filter(|index| !removed.contains(index))
+            .map(|index| ((index, 1), 0))
             .collect();
 
         let actual: Vec<_> = warren.iter().map(|(index, value)| (index, *value)).collect();
