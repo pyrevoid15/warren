@@ -15,14 +15,6 @@ impl WarrenIndex for (usize, u8) {
     fn real_index(&self) -> usize { self.0 }
 }
 
-pub struct FlagGuard {
-    guard: Vec<<FlagGuard as WarrenGuard>::MaskType>
-}
-pub struct GenerationGuard {
-    // guard: Vec<<GenerationGuard as WarrenGuard>::MaskType>,
-    generation: Vec<[u8; 64]> //TODO: Change "64" to Self::REGION_SIZE after implementing WarrenGuard.
-}
-
 pub trait WarrenGuard: private::Sealed {
     type MaskType;
     type IndexType: WarrenIndex;
@@ -60,8 +52,12 @@ pub trait WarrenGuard: private::Sealed {
     fn _get_index(&self, region_idx: usize, internal_idx: usize) -> Self::IndexType;
 }
 
+pub struct FlagGuard {
+    guard: Vec<<FlagGuard as WarrenGuard>::MaskType>
+}
+
 impl WarrenGuard for FlagGuard {
-    type MaskType = u64;
+    type MaskType = MaskType;
     type IndexType = usize;
 
     fn _with_region_count(region_count: usize) -> Self {
@@ -92,8 +88,8 @@ impl WarrenGuard for FlagGuard {
 
     fn _on_remove(&mut self, index: Self::IndexType) -> (bool, bool, usize) {
         
-        let region_index = index / REGION_SIZE;
-        let internal_index = index % REGION_SIZE;
+        let region_index = index / Self::REGION_SIZE;
+        let internal_index = index % Self::REGION_SIZE;
 
         let mask = (1 as MaskType) << internal_index;
         if self.guard[region_index] == 0 || self.guard[region_index] & mask == 0 { 
@@ -107,8 +103,8 @@ impl WarrenGuard for FlagGuard {
     }
 
     fn _check_active(&self, index: Self::IndexType) -> bool {
-        let ri = index / REGION_SIZE;
-        let ii = index % REGION_SIZE;
+        let ri = index / Self::REGION_SIZE;
+        let ii = index % Self::REGION_SIZE;
         return self.guard[ri] & (1 << ii) != 0;
     }
     
@@ -125,9 +121,9 @@ impl WarrenGuard for FlagGuard {
 
     #[doc(hidden)]
     fn _get_next_iter_location(&self, (region_index, internal_index): (usize, usize)) -> Option<(usize, usize)> {
-        if internal_index < REGION_SIZE {
+        if internal_index < Self::REGION_SIZE {
             let next_internal_index = internal_index + 1;
-            if next_internal_index < REGION_SIZE {
+            if next_internal_index < Self::REGION_SIZE {
                 let lookup = self.guard[region_index] >> next_internal_index;
                 if lookup != 0 {
                     let next_index = next_internal_index + lookup.trailing_zeros() as usize;
@@ -146,9 +142,72 @@ impl WarrenGuard for FlagGuard {
         return None;
     }
 
-
     fn _get_index(&self, region_idx: usize, internal_idx: usize) -> Self::IndexType {
         region_idx * REGION_SIZE + internal_idx
+    }
+}
+
+pub struct GenerationGuard {
+    guard: FlagGuard,
+    generation: Vec<[u8; REGION_SIZE]> //TODO: Change "64" to Self::REGION_SIZE after implementing WarrenGuard.
+}
+
+impl WarrenGuard for GenerationGuard {
+    type MaskType = MaskType;
+
+    type IndexType = (usize, u8);
+
+    fn _with_region_count(region_count: usize) -> Self {
+        let guard = FlagGuard::_with_region_count(region_count);
+
+        let mut generation = Vec::with_capacity(region_count);
+        generation.resize(region_count, [0; REGION_SIZE]);
+
+        Self { guard, generation }
+    }
+
+    fn _on_add_region(&mut self) {
+        self.guard._on_add_region();
+        self.generation.push([0; REGION_SIZE]);
+    }
+
+    fn _on_insert(&mut self, region_idx: usize) -> Self::IndexType {
+        let real_index = self.guard._on_insert(region_idx);
+        let next_generation = self.generation.as_flattened()[real_index].checked_add(1).unwrap_or(0);
+        self.generation.as_flattened_mut()[real_index] = next_generation;
+        (real_index, next_generation)
+    }
+
+    fn _region_is_full(&self, region_idx: usize) -> bool {
+        self.guard._region_is_full(region_idx)
+    }
+
+    fn _region_is_empty(&self, region_idx: usize) -> bool {
+        self.guard._region_is_empty(region_idx)
+    }
+
+    fn _on_remove(&mut self, index: Self::IndexType) -> (bool, bool, usize) {
+        self.guard._on_remove(index.real_index())
+    }
+
+    fn _check_active(&self, index: Self::IndexType) -> bool {
+        let ri = index.0 / Self::REGION_SIZE;
+        let ii = index.0 % Self::REGION_SIZE;
+        return self.guard.guard[ri] & (1 << ii) != 0 && self.generation.as_flattened()[index.0] == index.1;
+    }
+
+    fn _get_first_iter_location(&self) -> Option<(usize, usize)> {
+        self.guard._get_first_iter_location()
+    }
+
+    fn _get_next_iter_location(&self, ri_ii: (usize, usize)) -> Option<(usize, usize)> {
+        self.guard._get_next_iter_location(ri_ii)
+    }
+
+    fn _get_index(&self, region_idx: usize, internal_idx: usize) -> Self::IndexType {
+        let real_index = self.guard._get_index(region_idx, internal_idx);
+        let generation = self.generation.as_flattened()[real_index];
+        (real_index, generation)
     }
 }
 
