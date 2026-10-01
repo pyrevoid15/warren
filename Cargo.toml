@@ -4,7 +4,7 @@ version = "0.2.0"
 edition = "2024"
 repository = "https://github.com/pyrevoid15/warren"
 readme = "README.md"
-license = "LGPL"
+license = "LGPL-3.0-or-later"
 keywords = ["container", "hive"]
 description = """
 A data structure made for fast reuse of space and fast iteration over active entries.
