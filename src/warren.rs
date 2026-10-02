@@ -1,9 +1,13 @@
 use std::{fmt::Debug, mem::MaybeUninit};
 
 type MaskType = u64;
+
+/// Size of a region within the Warren. Also the size of the mask used in guards.
 pub const REGION_SIZE: usize = MaskType::BITS as usize;
 
+/// A type implementing this trait may be used with a guard to index a Warren.
 pub trait WarrenIndex: private::Sealed + Sized + Eq + Debug {
+    /// Returns the actual index position associated with the given index without any other information.
     fn real_index(&self) -> usize;
 }
 
@@ -245,7 +249,7 @@ const MAX_WARREN_ITEMS_PRINTED: usize = 128;
 /// Since elements are stored contiguously, this structure lacks pointer stability.
 /// An index will point to the same element until removal, however.
 /// 
-/// /// The `G` parameter controls how active slots and indices are tracked.
+/// The `G` parameter controls how active slots and indices are tracked.
 /// Use `FlagGuard` for the default behavior, or `GenerationGuard` when you
 /// need stale-index protection.
 /// 
@@ -551,7 +555,7 @@ impl<T: std::fmt::Debug, G: WarrenGuard> std::fmt::Debug for Warren<T, G> {
 impl<T, G: WarrenGuard> FromIterator<T> for Warren<T, G> {
     /// Note: This does not return indices. If you want indices, may be better to call the following instead.  
     /// ```
-    /// let mut warren = Warrem::new();
+    /// let mut warren = Warren::new();
     /// iter.into_iter().map(|x| { warren.insert(x) })
     /// ``` 
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
@@ -564,7 +568,7 @@ impl<T, G: WarrenGuard> FromIterator<T> for Warren<T, G> {
 impl<T, G: WarrenGuard> Extend<T> for Warren<T, G> {
     /// Note: This does not return indices. If you want indices, may be better to call the following instead.  
     /// ```
-    /// let mut warren = Warrem::new();
+    /// let mut warren = Warren::new();
     /// iter.into_iter().map(|x| { warren.insert(x) })
     /// ``` 
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
